@@ -36,6 +36,7 @@ class QAction;
 class QComboBox;
 class QDialog;
 class QDropEvent;
+class QFileSystemWatcher;
 class QMenuBar;
 class QLabel;
 class QSplitter;
@@ -88,6 +89,9 @@ private:
 
   std::chrono::time_point<std::chrono::system_clock> m_lastInputTime;
   QTimer* m_autosaveTimer = nullptr;
+  QFileSystemWatcher* m_fileSystemWatcher = nullptr;
+  QTimer* m_reloadDebounceTimer = nullptr;
+  bool m_selfSaveInProgress = false;
 
   QToolBar* m_toolBar = nullptr;
 

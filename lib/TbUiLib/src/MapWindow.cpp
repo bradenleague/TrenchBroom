@@ -24,6 +24,7 @@
 #include <QClipboard>
 #include <QComboBox>
 #include <QFileDialog>
+#include <QFileSystemWatcher>
 #include <QInputDialog>
 #include <QLabel>
 #include <QMessageBox>
@@ -186,6 +187,56 @@ MapWindow::MapWindow(AppController& appController, std::unique_ptr<MapDocument> 
 
   connectObservers();
   bindEvents();
+
+  // File system watcher for external .map changes (e.g. agent writes)
+  m_fileSystemWatcher = new QFileSystemWatcher{this};
+
+  // Debounce timer: batch rapid writes (e.g. remove + add entity back-to-back)
+  // and reload only after writes settle. 250ms handles atomic rename chains.
+  m_reloadDebounceTimer = new QTimer{this};
+  m_reloadDebounceTimer->setSingleShot(true);
+  m_reloadDebounceTimer->setInterval(250);
+  connect(m_reloadDebounceTimer, &QTimer::timeout, this, [this]() {
+    if (m_selfSaveInProgress)
+    {
+      return;
+    }
+    logger().info() << "External change detected, reloading map";
+    // Re-add path to ensure we're watching the current inode
+    if (m_document->map().persistent())
+    {
+      const auto path =
+        QString::fromStdString(m_document->map().path().string());
+      if (!m_fileSystemWatcher->files().contains(path))
+      {
+        m_fileSystemWatcher->addPath(path);
+      }
+    }
+    m_document->reload() | kdl::transform_error([&](auto e) {
+      logger().error() << "Failed to reload after external change: " << e.msg;
+    });
+  });
+
+  connect(
+    m_fileSystemWatcher,
+    &QFileSystemWatcher::fileChanged,
+    this,
+    [this](const QString& path) {
+      // Always re-add path (inotify removes watch on file replace via rename)
+      m_fileSystemWatcher->addPath(path);
+      if (m_selfSaveInProgress)
+      {
+        return;
+      }
+      // Debounce: restart timer on each change, reload when writes settle
+      m_reloadDebounceTimer->start();
+    });
+  // Watch the current map file if it exists on disk
+  if (m_document->map().persistent())
+  {
+    m_fileSystemWatcher->addPath(
+      QString::fromStdString(m_document->map().path().string()));
+  }
 
   restoreWidgetGeometry(this);
   restoreWidgetState(this);
@@ -794,6 +845,18 @@ void MapWindow::documentWasLoaded()
   updateActionState();
   updateUndoRedoActions();
   updateRecentDocumentsMenu();
+
+  // Update file watcher for newly loaded document
+  const auto files = m_fileSystemWatcher->files();
+  if (!files.isEmpty())
+  {
+    m_fileSystemWatcher->removePaths(files);
+  }
+  if (m_document->map().persistent())
+  {
+    m_fileSystemWatcher->addPath(
+      QString::fromStdString(m_document->map().path().string()));
+  }
 }
 
 void MapWindow::documentWasSaved()
@@ -948,25 +1011,29 @@ bool MapWindow::saveDocument()
 
   if (map.persistent())
   {
+    m_selfSaveInProgress = true;
     const auto startTime = std::chrono::high_resolution_clock::now();
-    return map.save() | kdl::transform([&]() {
-             const auto endTime = std::chrono::high_resolution_clock::now();
+    const auto result =
+      map.save() | kdl::transform([&]() {
+        const auto endTime = std::chrono::high_resolution_clock::now();
 
-             logger().info() << "Saved " << map.path() << " in "
-                             << std::chrono::duration_cast<std::chrono::milliseconds>(
-                                  endTime - startTime)
-                                  .count()
-                             << "ms";
-           })
-           | kdl::transform_error([&](const auto& e) {
-               QMessageBox::critical(
-                 this,
-                 "",
-                 QString::fromStdString(
-                   fmt::format("Error while saving {}: ", map.path(), e.msg)),
-                 QMessageBox::Ok);
-             })
-           | kdl::is_success();
+        logger().info() << "Saved " << map.path() << " in "
+                        << std::chrono::duration_cast<std::chrono::milliseconds>(
+                             endTime - startTime)
+                             .count()
+                        << "ms";
+      })
+      | kdl::transform_error([&](const auto& e) {
+          QMessageBox::critical(
+            this,
+            "",
+            QString::fromStdString(
+              fmt::format("Error while saving {}: ", map.path(), e.msg)),
+            QMessageBox::Ok);
+        })
+      | kdl::is_success();
+    m_selfSaveInProgress = false;
+    return result;
   }
   return saveDocumentAs();
 }
@@ -987,25 +1054,36 @@ bool MapWindow::saveDocumentAs()
 
   const auto path = pathFromQString(newFileName);
 
+  m_selfSaveInProgress = true;
   const auto startTime = std::chrono::high_resolution_clock::now();
-  return map.saveAs(path) | kdl::transform([&]() {
-           const auto endTime = std::chrono::high_resolution_clock::now();
+  const auto result =
+    map.saveAs(path) | kdl::transform([&]() {
+      const auto endTime = std::chrono::high_resolution_clock::now();
 
-           logger().info() << "Saved " << map.path() << " in "
-                           << std::chrono::duration_cast<std::chrono::milliseconds>(
-                                endTime - startTime)
-                                .count()
-                           << "ms";
-         })
-         | kdl::transform_error([&](const auto& e) {
-             QMessageBox::critical(
-               this,
-               "",
-               QString::fromStdString(
-                 fmt::format("Error while saving {}: ", path, e.msg)),
-               QMessageBox::Ok);
-           })
-         | kdl::is_success();
+      logger().info() << "Saved " << map.path() << " in "
+                      << std::chrono::duration_cast<std::chrono::milliseconds>(
+                           endTime - startTime)
+                           .count()
+                      << "ms";
+
+      // Update file watcher for new path
+      const auto files = m_fileSystemWatcher->files();
+      if (!files.isEmpty())
+      {
+        m_fileSystemWatcher->removePaths(files);
+      }
+      m_fileSystemWatcher->addPath(QString::fromStdString(map.path().string()));
+    })
+    | kdl::transform_error([&](const auto& e) {
+        QMessageBox::critical(
+          this,
+          "",
+          QString::fromStdString(fmt::format("Error while saving {}: ", path, e.msg)),
+          QMessageBox::Ok);
+      })
+    | kdl::is_success();
+  m_selfSaveInProgress = false;
+  return result;
 }
 
 void MapWindow::revertDocument()
