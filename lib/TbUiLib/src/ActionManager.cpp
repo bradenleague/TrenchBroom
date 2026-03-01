@@ -1775,6 +1775,16 @@ void ActionManager::createViewMenu()
     [](auto& context) { context.mapWindow().switchToInspectorPage(InspectorPage::Face); },
     [](const auto& context) { return context.hasDocument(); },
   }));
+  viewMenu.addItem(addAction(Action{
+    "Menu/View/Switch to Agent Inspector",
+    QObject::tr("Show Agent Inspector"),
+    ActionContext::Any,
+    QKeySequence{Qt::CTRL | Qt::Key_6},
+    [](auto& context) {
+      context.mapWindow().switchToInspectorPage(InspectorPage::Agent);
+    },
+    [](const auto& context) { return context.hasDocument(); },
+  }));
   viewMenu.addSeparator();
   viewMenu.addItem(addAction(Action{
     "Menu/View/Toggle Toolbar",

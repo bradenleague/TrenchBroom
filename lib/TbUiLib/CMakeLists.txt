@@ -10,6 +10,7 @@ target_sources(TbUiLib
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ActionContext.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ActionExecutionContext.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ActionManager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/AgentInspector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ActionMenu.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Animation.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/AppController.cpp
@@ -238,6 +239,7 @@ target_sources(TbUiLib
     ${CMAKE_CURRENT_SOURCE_DIR}/include/ui/ActionContext.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/ui/ActionExecutionContext.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/ui/ActionManager.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/ui/AgentInspector.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/ui/ActionMenu.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/ui/Animation.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/ui/AppController.h

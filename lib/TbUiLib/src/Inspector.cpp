@@ -24,6 +24,7 @@
 #include <QIODevice>
 #include <QVBoxLayout>
 
+#include "ui/AgentInspector.h"
 #include "ui/EntityInspector.h"
 #include "ui/FaceInspector.h"
 #include "ui/MapInspector.h"
@@ -48,6 +49,9 @@ Inspector::Inspector(AppController& appController, MapDocument& document, QWidge
   m_tabBook->addPage(m_mapInspector, "Map");
   m_tabBook->addPage(m_entityInspector, "Entity");
   m_tabBook->addPage(m_faceInspector, "Face");
+
+  m_agentInspector = new AgentInspector{document};
+  m_tabBook->addPage(m_agentInspector, "Agent");
 
   auto* layout = new QVBoxLayout{};
   layout->setContentsMargins(0, 0, 0, 0);
