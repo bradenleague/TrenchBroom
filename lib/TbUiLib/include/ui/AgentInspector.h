@@ -25,9 +25,10 @@
 #include <QProcess>
 
 class QLabel;
-class QLineEdit;
 class QPushButton;
 class QTextBrowser;
+class QTextEdit;
+class QTimer;
 
 namespace tb::ui
 {
@@ -40,16 +41,29 @@ private:
   MapDocument& m_document;
 
   QTextBrowser* m_chatLog = nullptr;
-  QLineEdit* m_inputField = nullptr;
+  QTextEdit* m_inputField = nullptr;
   QPushButton* m_sendButton = nullptr;
+  QPushButton* m_resetButton = nullptr;
   QLabel* m_statusLabel = nullptr;
 
   QProcess* m_agentProcess = nullptr;
   QByteArray m_stdoutBuffer;
 
+  // Streaming state
+  QString m_currentAgentText;
+  bool m_streamingText = false;
+
+  // Status animation
+  QTimer* m_statusTimer = nullptr;
+  int m_statusDots = 0;
+  QString m_statusBase;
+
 public:
   explicit AgentInspector(MapDocument& document, QWidget* parent = nullptr);
   ~AgentInspector() override;
+
+protected:
+  bool eventFilter(QObject* obj, QEvent* event) override;
 
 private:
   void createGui();
@@ -58,6 +72,7 @@ private:
   void ensureAgentRunning();
 
   void sendMessage(const QString& message);
+  void resetConversation();
   void handleAgentOutput();
   void handleAgentError();
   void handleProcessFinished(int exitCode);
@@ -71,6 +86,7 @@ private:
   void appendToolResult(const QString& name, bool success, const QString& output);
   void appendError(const QString& message);
   void setStatus(const QString& status);
+  QString markdownToHtml(const QString& text) const;
 };
 
 } // namespace tb::ui

@@ -24,16 +24,22 @@
 #include "mdl/Map.h"
 
 #include <QDir>
+#include <QEvent>
 #include <QFile>
 #include <QHBoxLayout>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeyEvent>
 #include <QLabel>
-#include <QLineEdit>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QPushButton>
+#include <QScrollBar>
+#include <QRegularExpression>
 #include <QTextBrowser>
+#include <QTextCursor>
+#include <QTextEdit>
+#include <QTimer>
 #include <QVBoxLayout>
 
 namespace tb::ui
@@ -85,29 +91,44 @@ void AgentInspector::createGui()
     ".tool-call { color: #9E9E9E; font-family: monospace; font-size: 9pt; }"
     ".tool-ok { color: #4CAF50; font-size: 9pt; }"
     ".tool-err { color: #F44336; font-size: 9pt; }"
-    ".error { color: #F44336; font-weight: bold; }");
+    ".error { color: #F44336; font-weight: bold; }"
+    "code { background-color: #333; font-family: monospace; }"
+    "pre { background-color: #2a2a2a; font-family: monospace; font-size: 9pt; }");
 
-  // Status label
+  // Status label + animation timer
   m_statusLabel = new QLabel{"Ready"};
   m_statusLabel->setStyleSheet("color: #9E9E9E; padding: 2px 4px;");
 
-  // Input field + send button
-  m_inputField = new QLineEdit{};
+  m_statusTimer = new QTimer{this};
+  m_statusTimer->setInterval(400);
+  connect(m_statusTimer, &QTimer::timeout, this, [this]() {
+    m_statusDots = (m_statusDots % 3) + 1;
+    m_statusLabel->setText(m_statusBase + QString{"."}.repeated(m_statusDots));
+  });
+
+  // Input field — multi-line QTextEdit (Enter sends, Shift+Enter = newline)
+  m_inputField = new QTextEdit{};
   m_inputField->setPlaceholderText("Describe what you want to build...");
-  connect(
-    m_inputField, &QLineEdit::returnPressed, this, [this]() {
-      sendMessage(m_inputField->text());
-    });
+  m_inputField->setMaximumHeight(60);
+  m_inputField->setAcceptRichText(false);
+  m_inputField->installEventFilter(this);
 
   m_sendButton = new QPushButton{"Send"};
   connect(m_sendButton, &QPushButton::clicked, this, [this]() {
-    sendMessage(m_inputField->text());
+    sendMessage(m_inputField->toPlainText());
+  });
+
+  m_resetButton = new QPushButton{"Reset"};
+  m_resetButton->setToolTip("Clear chat and reset agent conversation");
+  connect(m_resetButton, &QPushButton::clicked, this, [this]() {
+    resetConversation();
   });
 
   auto* inputLayout = new QHBoxLayout{};
   inputLayout->setContentsMargins(0, 0, 0, 0);
   inputLayout->addWidget(m_inputField, 1);
   inputLayout->addWidget(m_sendButton);
+  inputLayout->addWidget(m_resetButton);
 
   auto* layout = new QVBoxLayout{};
   layout->setContentsMargins(4, 4, 4, 4);
@@ -116,6 +137,31 @@ void AgentInspector::createGui()
   layout->addWidget(m_statusLabel);
   layout->addLayout(inputLayout);
   setLayout(layout);
+}
+
+// ---------------------------------------------------------------------------
+// Event filter — Enter sends, Shift+Enter inserts newline
+// ---------------------------------------------------------------------------
+
+bool AgentInspector::eventFilter(QObject* obj, QEvent* event)
+{
+  if (obj == m_inputField && event->type() == QEvent::KeyPress)
+  {
+    auto* keyEvent = static_cast<QKeyEvent*>(event);
+    if (keyEvent->key() == Qt::Key_Return
+        || keyEvent->key() == Qt::Key_Enter)
+    {
+      if (keyEvent->modifiers() & Qt::ShiftModifier)
+      {
+        // Shift+Enter: insert newline (default behavior)
+        return false;
+      }
+      // Enter: send message
+      sendMessage(m_inputField->toPlainText());
+      return true;
+    }
+  }
+  return TabBookPage::eventFilter(obj, event);
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +235,9 @@ void AgentInspector::stopAgent()
   delete m_agentProcess;
   m_agentProcess = nullptr;
   m_stdoutBuffer.clear();
+  m_streamingText = false;
+  m_currentAgentText.clear();
+  m_statusTimer->stop();
 }
 
 void AgentInspector::ensureAgentRunning()
@@ -231,6 +280,7 @@ void AgentInspector::sendMessage(const QString& message)
   m_inputField->clear();
   m_inputField->setEnabled(false);
   m_sendButton->setEnabled(false);
+  m_resetButton->setEnabled(false);
 
   // Build JSON line request
   auto request = QJsonObject{};
@@ -240,6 +290,33 @@ void AgentInspector::sendMessage(const QString& message)
 
   auto jsonLine = QJsonDocument{request}.toJson(QJsonDocument::Compact) + "\n";
   m_agentProcess->write(jsonLine);
+}
+
+// ---------------------------------------------------------------------------
+// Reset conversation
+// ---------------------------------------------------------------------------
+
+void AgentInspector::resetConversation()
+{
+  if (m_agentProcess
+      && m_agentProcess->state() == QProcess::Running)
+  {
+    // Send reset protocol message
+    auto request = QJsonObject{};
+    request["type"] = "reset";
+    auto jsonLine =
+      QJsonDocument{request}.toJson(QJsonDocument::Compact) + "\n";
+    m_agentProcess->write(jsonLine);
+  }
+
+  m_chatLog->clear();
+  m_streamingText = false;
+  m_currentAgentText.clear();
+  setStatus("Ready");
+  m_inputField->setEnabled(true);
+  m_sendButton->setEnabled(true);
+  m_resetButton->setEnabled(true);
+  m_inputField->setFocus();
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +359,13 @@ void AgentInspector::handleAgentError()
 
 void AgentInspector::handleProcessFinished(int exitCode)
 {
+  // Clean up streaming state
+  if (m_streamingText)
+  {
+    m_streamingText = false;
+    m_currentAgentText.clear();
+  }
+
   if (exitCode != 0)
   {
     setStatus("Agent stopped — send a message to restart");
@@ -293,6 +377,7 @@ void AgentInspector::handleProcessFinished(int exitCode)
 
   m_inputField->setEnabled(true);
   m_sendButton->setEnabled(true);
+  m_resetButton->setEnabled(true);
 }
 
 void AgentInspector::processJsonLine(const QByteArray& line)
@@ -322,23 +407,90 @@ void AgentInspector::processJsonLine(const QByteArray& line)
     auto output = success ? obj["output"].toString() : obj["error"].toString();
     appendToolResult(obj["name"].toString(), success, output);
   }
+  else if (type == "text_start")
+  {
+    // Begin streaming a new text block
+    m_currentAgentText.clear();
+    m_streamingText = true;
+    m_chatLog->append("<p class='agent'><b>Agent:</b> ");
+  }
+  else if (type == "text_delta")
+  {
+    if (m_streamingText)
+    {
+      auto text = obj["text"].toString();
+      // Insert as plain text to preserve whitespace (insertHtml collapses spaces)
+      auto cursor = m_chatLog->textCursor();
+      cursor.movePosition(QTextCursor::End);
+      cursor.insertText(text);
+      m_currentAgentText += text;
+      // Auto-scroll to bottom
+      m_chatLog->verticalScrollBar()->setValue(
+        m_chatLog->verticalScrollBar()->maximum());
+    }
+  }
+  else if (type == "text_end")
+  {
+    if (m_streamingText)
+    {
+      // Replace streamed plain text with markdown-formatted HTML
+      auto cursor = m_chatLog->textCursor();
+      cursor.movePosition(QTextCursor::End);
+      cursor.movePosition(
+        QTextCursor::Left,
+        QTextCursor::KeepAnchor,
+        static_cast<int>(m_currentAgentText.length()));
+      cursor.removeSelectedText();
+      cursor.insertHtml(markdownToHtml(m_currentAgentText));
+      m_streamingText = false;
+      m_currentAgentText.clear();
+    }
+  }
   else if (type == "text")
   {
-    appendAgentText(obj["text"].toString());
+    // Fallback: non-streaming full text block
+    if (!m_streamingText)
+    {
+      appendAgentText(obj["text"].toString());
+    }
   }
   else if (type == "done")
   {
+    // Clean up any dangling streaming state
+    if (m_streamingText)
+    {
+      auto cursor = m_chatLog->textCursor();
+      cursor.movePosition(QTextCursor::End);
+      cursor.movePosition(
+        QTextCursor::Left,
+        QTextCursor::KeepAnchor,
+        static_cast<int>(m_currentAgentText.length()));
+      cursor.removeSelectedText();
+      cursor.insertHtml(markdownToHtml(m_currentAgentText));
+      m_streamingText = false;
+      m_currentAgentText.clear();
+    }
+
     setStatus("Ready");
     m_inputField->setEnabled(true);
     m_sendButton->setEnabled(true);
+    m_resetButton->setEnabled(true);
     m_inputField->setFocus();
   }
   else if (type == "error")
   {
+    // Clean up streaming state on error
+    if (m_streamingText)
+    {
+      m_streamingText = false;
+      m_currentAgentText.clear();
+    }
+
     appendError(obj["message"].toString());
     setStatus("Ready");
     m_inputField->setEnabled(true);
     m_sendButton->setEnabled(true);
+    m_resetButton->setEnabled(true);
   }
 }
 
@@ -363,10 +515,8 @@ void AgentInspector::appendUserMessage(const QString& text)
 
 void AgentInspector::appendAgentText(const QString& text)
 {
-  // Convert newlines to <br> for multi-line responses
-  auto html = text.toHtmlEscaped().replace("\n", "<br>");
   m_chatLog->append(
-    QString{"<p class='agent'><b>Agent:</b> %1</p>"}.arg(html));
+    QString{"<p class='agent'><b>Agent:</b> %1</p>"}.arg(markdownToHtml(text)));
 }
 
 void AgentInspector::appendToolCall(const QString& name, const QString& input)
@@ -404,7 +554,53 @@ void AgentInspector::appendError(const QString& message)
 
 void AgentInspector::setStatus(const QString& status)
 {
+  // Strip trailing dots for animation base
+  m_statusBase = status;
+  m_statusBase.remove(QRegularExpression{"\\.+$"});
+  m_statusDots = 0;
+
+  // Animate dots for active statuses
+  auto active =
+    !status.startsWith("Ready") && !status.startsWith("Agent stopped");
+
+  if (active)
+  {
+    m_statusTimer->start();
+  }
+  else
+  {
+    m_statusTimer->stop();
+  }
+
   m_statusLabel->setText(status);
+}
+
+QString AgentInspector::markdownToHtml(const QString& text) const
+{
+  auto html = text.toHtmlEscaped();
+
+  // Code blocks: ```lang\ncode\n``` → <pre>code</pre>
+  static const auto codeBlockRe = QRegularExpression{
+    "```(?:\\w*)\\n(.*?)```",
+    QRegularExpression::DotMatchesEverythingOption};
+  html.replace(codeBlockRe, "<pre>\\1</pre>");
+
+  // Inline code: `code` → <code>code</code>
+  static const auto inlineCodeRe = QRegularExpression{"`([^`]+)`"};
+  html.replace(inlineCodeRe, "<code>\\1</code>");
+
+  // Bold: **text** → <b>text</b>
+  static const auto boldRe = QRegularExpression{"\\*\\*(.+?)\\*\\*"};
+  html.replace(boldRe, "<b>\\1</b>");
+
+  // Italic: *text* → <i>text</i>
+  static const auto italicRe = QRegularExpression{"\\*([^*]+)\\*"};
+  html.replace(italicRe, "<i>\\1</i>");
+
+  // Newlines → <br>
+  html.replace("\n", "<br>");
+
+  return html;
 }
 
 } // namespace tb::ui
